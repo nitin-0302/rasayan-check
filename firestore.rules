@@ -1,0 +1,103 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == "brothernitin99@gmail.com" ||
+        request.auth.token.email == "nitin.c@somaiya.edu"
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // --- Validation Helpers ---
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['userId', 'name', 'email']) &&
+             data.userId == request.auth.uid &&
+             data.name is string && data.name.size() >= 2 && data.name.size() <= 100 &&
+             data.email is string && data.email.size() >= 5 && data.email.size() <= 100 &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 20)) &&
+             (!('college' in data) || (data.college is string && data.college.size() <= 100)) &&
+             (!('isAdmin' in data) || data.isAdmin is bool) &&
+             (!('createdAt' in data) || data.createdAt is string); // Ideally timestamp but app sends strings
+    }
+
+    function isValidRegistration(data) {
+      return data.keys().hasAll(['userId', 'eventIds', 'registrationTime']) &&
+             data.userId == request.auth.uid &&
+             data.eventIds is list && data.eventIds.size() > 0 && data.eventIds.size() <= 20 &&
+             data.registrationTime is string;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['userId', 'userName', 'text', 'timestamp']) &&
+             data.userId == request.auth.uid &&
+             data.text is string && data.text.size() > 0 && data.text.size() <= 500 &&
+             data.userName is string && data.userName.size() <= 100 &&
+             data.timestamp != null;
+    }
+
+    function isValidAnnouncement(data) {
+      return data.keys().hasAll(['title', 'content', 'timestamp']) &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+             data.content is string && data.content.size() > 0 && data.content.size() <= 5000 &&
+             data.timestamp != null;
+    }
+
+    // --- Match Blocks ---
+
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && (
+        // Prevent users from making themselves admins via client
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'phone', 'college']))
+      );
+    }
+
+    match /registrations/{registrationId} {
+      allow get: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      // Secure List Query: Enforce filtering by userId or being admin
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && isValidRegistration(request.resource.data) && isValidId(registrationId);
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /messages/{messageId} {
+      // Secure List Query: Allow all signed in users to read, but they must be authenticated
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidMessage(request.resource.data) && isValidId(messageId);
+      allow update, delete: if isAdmin();
+    }
+
+    match /announcements/{announcementId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+  }
+}
